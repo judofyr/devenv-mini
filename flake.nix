@@ -11,6 +11,25 @@
       ...
     }@inputs:
     let
+      lib = nixpkgs.lib;
+      types = lib.types;
+      taskType = lib.types.submodule (
+        { name, config, ... }:
+        {
+          options = {
+            after = lib.mkOption {
+              type = types.listOf types.str;
+              default = [ ];
+            };
+            before = lib.mkOption {
+              type = types.listOf types.str;
+              default = [ ];
+            };
+          };
+
+          freeformType = types.attrsOf types.anything;
+        }
+      );
       devenvModule =
         {
           lib,
@@ -20,6 +39,32 @@
         }:
         let
           settingsFormat = pkgs.formats.yaml { };
+          dag = (import ./lib/dag.nix) {
+            inherit lib;
+            hm = {
+              dag = dag;
+            };
+          };
+          enterShellTaskName = "devenv:enterShell";
+
+          enterShellSet = lib.filterAttrs (
+            name: task: (builtins.elem enterShellTaskName (task.before ++ task.after))
+          ) config.tasks;
+          enterShellDag = lib.mapAttrs (
+            name: task: dag.entryBetween task.before task.after task
+          ) enterShellSet;
+
+          enterShellSort = dag.topoSort enterShellDag;
+
+          enterShell = lib.concatStrings (
+            map (
+              { data, name }:
+              ''
+                # ${name}
+                ${data.exec}
+              ''
+            ) enterShellSort.result
+          );
         in
         {
           disabledModules = [
@@ -29,7 +74,10 @@
 
           options = {
             # We need to re-define this options since other modules depend on it.
-            tasks = lib.mkOption { };
+            tasks = lib.mkOption {
+              type = types.attrsOf taskType;
+              description = "A set of tasks.";
+            };
 
             process.managers.process-compose-mini = {
               enable = lib.mkEnableOption "noop as the process manager" // {
@@ -47,6 +95,7 @@
           config = lib.mkMerge [
             {
               process.manager.implementation = lib.mkDefault "process-compose-mini";
+              enterShell = enterShell;
             }
 
             (lib.mkIf (config.process.managers.noop.enable) {
@@ -93,15 +142,24 @@
       perSystem =
         { ... }:
         {
-          devenv.shells.default = {
-            # Just an example for testing:
-            processes.sleep = {
-              exec = ''
-                echo "Sleeping..."
-                sleep infinity
-              '';
+          devenv.shells.default =
+            { config, ... }:
+            {
+              # An example of enterShell support.
+
+              languages.python = {
+                enable = true;
+                venv.enable = true;
+              };
+
+              # Just an example for testing:
+              processes.sleep = {
+                exec = ''
+                  echo "Sleeping..."
+                  sleep infinity
+                '';
+              };
             };
-          };
         };
     };
 }
